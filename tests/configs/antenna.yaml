@@ -1,0 +1,66 @@
+mode: em-1d
+
+mlflow:
+  experiment: em1d-antenna-test
+  run: test
+
+grid:
+    nx: 512
+    xmin: 0.0
+    xmax: 60.94
+    tmin: 0.0
+    tmax: 1
+
+models: False
+
+save:
+    func:
+      is_on: True
+    t:
+      tmin: 0.0
+      tmax: 1.0
+      nt: 10
+    x:
+      is_on: True
+      xmin: 0.0
+      xmax: 20.94
+      nx: 64
+    kx:
+      is_on: True
+      kxmin: 0.0
+      kxmax: 1.3
+      nkx: 2
+
+physics:
+    ion:
+      is_on: False
+      landau_damping: False
+      mass: 1836.0
+      T0: 0.01
+      charge: 1.0
+      gamma: 3
+      trapping:
+        is_on: False
+        kld: 0.3
+    electron:
+      is_on: True
+      landau_damping: True
+      T0: 1.0
+      mass: 1.0
+      charge: -1.0
+      gamma: 3.0
+      trapping:
+        is_on: False
+        kld: 0.3
+
+
+drivers:
+  "ey":
+    "k0": [1.0]
+    "w0": [1.0]
+    "dw0": [0.0]
+    "t_c": [15.0]
+    "t_w": [10.0]
+    "t_r": [2.5]
+    "x_s": [256]
+    "a0": [1.e-3]

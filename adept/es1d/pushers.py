@@ -12,69 +12,120 @@ def get_envelope(p_wL, p_wR, p_L, p_R, ax):
     return 0.5 * (jnp.tanh((ax - p_L) / p_wL) - jnp.tanh((ax - p_R) / p_wR))
 
 
-class WaveSolver(eqx.Module):
+class PushEMWave(eqx.Module):
+    nx: int
+    kx: jax.Array
     dx: float
-    c: float
-    c_sq: float
     dt: float
-    const: float
-    one_over_const: float
+    a0: jnp.array
+    w0: jnp.array
+    k0: jnp.array
+    dw0: jnp.array
+    t_L: jnp.array
+    t_R: jnp.array
+    t_r: jnp.array
+    x_s: list[int]
 
-    def __init__(self, c: jnp.float64, dx: jnp.float64, dt: jnp.float64):
+    def __init__(self, kx: jax.Array, dx: jnp.float64, dt: jnp.float64, nx: int, these_pulse: Dict):
+        self.kx = kx
         self.dx = dx
-        self.c = c
-        self.c_sq = c**2.0
-        c_over_dx = c / dx
         self.dt = dt
-        self.const = c_over_dx * dt
-        # abc_const = (const - 1.0) / (const + 1.0)
-        self.one_over_const = 1.0 / dt / c_over_dx
+        self.nx = nx
+        self.a0 = jnp.array(these_pulse["a0"])
+        self.w0 = jnp.array(these_pulse["w0"])
+        self.k0 = jnp.array(these_pulse["k0"])
+        self.dw0 = jnp.array(these_pulse["dw0"])
+        self.t_L = jnp.array(these_pulse["t_c"]) - 0.5 * jnp.array(these_pulse["t_w"])
+        self.t_R = jnp.array(these_pulse["t_c"]) + 0.5 * jnp.array(these_pulse["t_w"])
+        self.t_r = jnp.array(these_pulse["t_r"])
+        self.x_s = these_pulse["x_s"]
 
-    def apply_2nd_order_abc(self, aold, a, anew):
+    def apply_2nd_order_abc(self, anew):
         """
         Second order absorbing boundary conditions
 
-        :param aold:
+        :param ad:
         :param a:
         :param anew:
-        :param dt:
         :return:
         """
-
-        coeff = -1.0 / (self.one_over_const + 2.0 + self.const)
-
-        # # 2nd order ABC
-        a_left = (self.one_over_const - 2.0 + self.const) * (anew[1] + aold[0])
-        a_left += 2.0 * (self.const - self.one_over_const) * (a[0] + a[2] - anew[0] - aold[1])
-        a_left -= 4.0 * (self.one_over_const + self.const) * a[1]
-        a_left *= coeff
-        a_left -= aold[2]
-        a_left = jnp.array([a_left])
-
-        a_right = (self.one_over_const - 2.0 + self.const) * (anew[-2] + aold[-1])
-        a_right += 2.0 * (self.const - self.one_over_const) * (a[-1] + a[-3] - anew[-1] - aold[-2])
-        a_right -= 4.0 * (self.one_over_const + self.const) * a[-2]
-        a_right *= coeff
-        a_right -= aold[-3]
-        a_right = jnp.array([a_right])
 
         # commenting out first order damping
         # a_left = jnp.array([a[1] + abc_const * (anew[0] - a[0])])
         # a_right = jnp.array([a[-2] + abc_const * (anew[-1] - a[-1])])
 
-        return jnp.concatenate([a_left, anew, a_right])
+        return anew
 
-    def __call__(self, a: jnp.ndarray, aold: jnp.ndarray, djy_array: jnp.ndarray, electron_charge: jnp.ndarray):
-        if self.c > 0:
-            d2dx2 = (a[:-2] - 2.0 * a[1:-1] + a[2:]) / self.dx**2.0
-            anew = (
-                2.0 * a[1:-1]
-                - aold[1:-1]
-                + self.dt**2.0 * (self.c_sq * d2dx2 - electron_charge * a[1:-1] + djy_array)
-            )
-            return self.apply_2nd_order_abc(aold, a, anew), a
-        else:
-            return a, aold
+    def __call__(self, a: jnp.ndarray, current_time: jnp.float64):  # , djy_array: jnp.ndarray
+        djay_drive = jnp.zeros(self.nx)
+        for xn, t_r, t_L, t_R, w0, a0 in zip(self.x_s, self.t_r, self.t_L, self.t_R, self.w0, self.a0):
+            # envelope_t = get_envelope(t_r, t_r, t_L, t_R, current_time) * a0
+            djay_drive = djay_drive.at[xn].set(a0 * jnp.sin(w0 * current_time) * w0)
+        return djay_drive + nabla(a, self.kx)  # + djy_array
+
+# class WaveSolver(eqx.Module):
+#     dx: float
+#     c: float
+#     c_sq: float
+#     dt: float
+#     const: float
+#     one_over_const: float
+#
+#     def __init__(self, c: jnp.float64, dx: jnp.float64, dt: jnp.float64):
+#         self.dx = dx
+#         self.c = c
+#         self.c_sq = c**2.0
+#         c_over_dx = c / dx
+#         self.dt = dt
+#         self.const = c_over_dx * dt
+#         # abc_const = (const - 1.0) / (const + 1.0)
+#         self.one_over_const = 1.0 / dt / c_over_dx
+#
+#     def apply_2nd_order_abc(self, aold, a, anew):
+#         """
+#         Second order absorbing boundary conditions
+#
+#         :param aold:
+#         :param a:
+#         :param anew:
+#         :param dt:
+#         :return:
+#         """
+#
+#         coeff = -1.0 / (self.one_over_const + 2.0 + self.const)
+#
+#         # # 2nd order ABC
+#         a_left = (self.one_over_const - 2.0 + self.const) * (anew[1] + aold[0])
+#         a_left += 2.0 * (self.const - self.one_over_const) * (a[0] + a[2] - anew[0] - aold[1])
+#         a_left -= 4.0 * (self.one_over_const + self.const) * a[1]
+#         a_left *= coeff
+#         a_left -= aold[2]
+#         a_left = jnp.array([a_left])
+#
+#         a_right = (self.one_over_const - 2.0 + self.const) * (anew[-2] + aold[-1])
+#         a_right += 2.0 * (self.const - self.one_over_const) * (a[-1] + a[-3] - anew[-1] - aold[-2])
+#         a_right -= 4.0 * (self.one_over_const + self.const) * a[-2]
+#         a_right *= coeff
+#         a_right -= aold[-3]
+#         a_right = jnp.array([a_right])
+#
+#         # commenting out first order damping
+#         # a_left = jnp.array([a[1] + abc_const * (anew[0] - a[0])])
+#         # a_right = jnp.array([a[-2] + abc_const * (anew[-1] - a[-1])])
+#
+#         return jnp.concatenate([a_left, anew, a_right])
+#
+#     def __call__(self, a: jnp.ndarray, aold: jnp.ndarray, djy_array: jnp.ndarray, electron_charge: jnp.ndarray):
+#         if self.c > 0:
+#             d2dx2 = (a[:-2] - 2.0 * a[1:-1] + a[2:]) / self.dx**2.0
+#             anew = (
+#                 2.0 * a[1:-1]
+#                 - aold[1:-1]
+#                 + self.dt**2.0 * (self.c_sq * d2dx2 - electron_charge * a[1:-1] + djy_array)
+#             )
+#             return self.apply_2nd_order_abc(aold, a, anew), a
+#         else:
+#             return a, aold
 
 
 class Driver(eqx.Module):
@@ -120,6 +171,10 @@ class StepAmpere(eqx.Module):
 
 def gradient(arr, kx):
     return jnp.real(jnp.fft.ifft(1j * kx * jnp.fft.fft(arr)))
+
+
+def nabla(arr, kx):
+    return jnp.real(jnp.fft.ifft(- kx**2 * jnp.fft.fft(arr)))
 
 
 class DensityStepper(eqx.Module):

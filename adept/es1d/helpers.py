@@ -37,6 +37,7 @@ def plot_xrs(which, td, xrs):
     os.makedirs(os.path.join(td, "plots", which))
     os.makedirs(os.path.join(td, "plots", which, "ion"))
     os.makedirs(os.path.join(td, "plots", which, "electron"))
+    os.makedirs(os.path.join(td, "plots", which, "field"))
 
     for k, v in xrs.items():
         fname = f"{'-'.join(k.split('-')[1:])}.png"
@@ -49,6 +50,7 @@ def plot_xrs(which, td, xrs):
         if which == "kx":
             os.makedirs(os.path.join(td, "plots", which, "ion", "hue"), exist_ok=True)
             os.makedirs(os.path.join(td, "plots", which, "electron", "hue"), exist_ok=True)
+            os.makedirs(os.path.join(td, "plots", which, "field", "hue"), exist_ok=True)
             # only plot
             if v.coords["kx"].size > 8:
                 hue_skip = v.coords["kx"].size // 8
@@ -169,6 +171,10 @@ def init_state(cfg: Dict) -> Dict:
             u=jnp.zeros(cfg["grid"]["nx"]),
             delta=jnp.zeros(cfg["grid"]["nx"]),
         )
+        state["field"] = dict(
+            ey=jnp.zeros(cfg["grid"]["nx"]),
+            ed=jnp.zeros(cfg["grid"]["nx"])
+        )
 
     return state
 
@@ -189,6 +195,7 @@ class VectorField(eqx.Module):
     pusher_dict: Dict
     push_driver: Callable
     poisson_solver: Callable
+    push_em_wave: Callable
 
     def __init__(self, cfg, models):
         super().__init__()
@@ -207,7 +214,9 @@ class VectorField(eqx.Module):
 
         self.push_driver = pushers.Driver(cfg["grid"]["x"])
         # if "ey" in self.cfg["drivers"]:
-        #     self.wave_solver = pushers.WaveSolver(cfg["grid"]["c"], cfg["grid"]["dx"], cfg["grid"]["dt"])
+        self.push_em_wave = pushers.PushEMWave(
+            cfg["grid"]["kx"], cfg["grid"]["dx"], cfg["grid"]["dt"], self.cfg["grid"]["nx"], cfg["drivers"]["ey"]
+        )
         self.poisson_solver = pushers.PoissonSolver(cfg["grid"]["one_over_kx"])
 
     def __call__(self, t: float, y: Dict, args: Dict):
@@ -225,8 +234,9 @@ class VectorField(eqx.Module):
         )
         ed = 0.0
 
-        for p_ind in self.cfg["drivers"]["ex"].keys():
-            ed += self.push_driver(args["driver"]["ex"][p_ind], t)
+        if "ex" in self.cfg["drivers"]:
+            for p_ind in self.cfg["drivers"]["ex"].keys():
+                ed += self.push_driver(args["driver"]["ex"][p_ind], t)
 
         # if "ey" in self.cfg["drivers"]:
         #     ad = 0.0
@@ -238,16 +248,15 @@ class VectorField(eqx.Module):
 
         total_e = e + ed  # + ponderomotive_force
 
-        dstate_dt = {"ion": {}, "electron": {}}
+        dstate_dt = {"ion": {}, "electron": {}, "field": {}}
         for species_name in ["ion", "electron"]:
             n = y[species_name]["n"]
             u = y[species_name]["u"]
             p = y[species_name]["p"]
             delta = y[species_name]["delta"]
+            q_over_m = self.cfg["physics"][species_name]["charge"] / self.cfg["physics"][species_name]["mass"]
+            p_over_m = p / self.cfg["physics"][species_name]["mass"]
             if self.cfg["physics"][species_name]["is_on"]:
-                q_over_m = self.cfg["physics"][species_name]["charge"] / self.cfg["physics"][species_name]["mass"]
-                p_over_m = p / self.cfg["physics"][species_name]["mass"]
-
                 dstate_dt[species_name]["n"] = self.pusher_dict[species_name]["push_n"](n, u)
                 dstate_dt[species_name]["u"] = self.pusher_dict[species_name]["push_u"](
                     n, u, p_over_m, q_over_m * total_e, delta
@@ -263,6 +272,16 @@ class VectorField(eqx.Module):
             else:
                 dstate_dt[species_name]["delta"] = jnp.zeros(self.cfg["grid"]["nx"])
 
+        if "ey" in self.cfg["drivers"]:
+            ed, ey = y["field"]["ed"], y["field"]["ey"]
+            # djy_array = 4 * np.pi * (
+            #         self.pusher_dict["ion"]["push_u"](n, u, p_over_m, q_over_m * total_e, delta) *
+            #         self.cfg["physics"]["ion"]["charge"] +
+            #         self.pusher_dict["electron"]["push_u"](n, u, p_over_m, q_over_m * total_e, delta) *
+            #         self.cfg["physics"]["electron"]["charge"]
+            # )
+            dstate_dt["field"]["ey"] = ed
+            dstate_dt["field"]["ed"] = self.push_em_wave(ey, t) # ,djy_array
         return dstate_dt
 
 
